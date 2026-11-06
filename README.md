@@ -1,47 +1,112 @@
 # brick-mcp
 
-An [MCP](https://modelcontextprotocol.io/) server that lets AI assistants create, inspect, and edit LEGO models stored in BrickLink Studio (`.io`) and LDraw (`.ldr`) files. Ask your AI assistant to open a file, move parts around, change colors, add new bricks — then save back to a file that opens directly in BrickLink Studio.
+让 AI 助手（Claude Desktop 等）直接创建、查看和修改乐高模型的 [MCP](https://modelcontextprotocol.io/) 服务器，支持 BrickLink Studio 的 `.io` 文件和 LDraw 的 `.ldr` / `.mpd` 文件。
 
-## Features
+An MCP server that lets AI assistants create, inspect and edit LEGO models in BrickLink Studio and LDraw files. This fork adds macOS support without Nix, better Studio compatibility, and SPIKE part search.
 
-- Open and save **BrickLink Studio `.io`** files and plain LDraw **`.ldr`** / `.mpd` files
-- List parts, inspect the bill of materials, and view building-instruction steps
-- Add, remove, move, rotate, and recolor individual parts by session ID
-- Search the built-in parts database and look up LDraw color codes
-- Create new models from scratch with `new_model()`
+> Fork 自 [datakurre/brick-mcp](https://github.com/datakurre/brick-mcp)，核心功能来自原作者。上游仓库没有许可证文件，复用或分发前请留意这一点。
 
-## Requirements
+## 效果
 
-- Python ≥ 3.14
-- [Nix](https://nixos.org/) (recommended — handles all dependencies automatically)
+AI 通过 MCP 搭建并渲染的 SPIKE Essential 零件（从右到左：主机、小型角度马达、颜色传感器、光矩阵，以及一块 2×4 砖）：
 
-Without Nix, install Python dependencies manually:
+![LDView 渲染的 SPIKE Essential 零件](docs/images/spike-essential-parts.png)
 
-```sh
-pip install "fastmcp>=3.1.0" "pyzipper>=0.3.6"
+生成的 `.io` 文件在 BrickLink Studio 中打开：
+
+![BrickLink Studio 中打开的模型](docs/images/studio-spike-parts.webp)
+
+## 功能
+
+- 打开和保存 `.io`、`.ldr`、`.mpd` 文件，保存的 `.io` 可以直接用 Studio 打开
+- 添加、删除、移动、旋转零件和修改颜色，支持批量操作
+- 查看零件清单（BOM）和搭建步骤，增删步骤
+- 碰撞检查和放置校验
+- 搜索 LDraw 零件库（约 2.5 万个零件）
+- 渲染 PNG 预览图，并保存为文件
+
+### 这个 fork 新增的内容
+
+| 方面 | 改进 |
+|---|---|
+| **运行环境** | 不用 Nix 也能在 macOS 上加载完整零件库和渲染 |
+| **Studio 兼容** | 保存时写入 Studio 必需的 `.info`，并在 LDraw 和 Studio 的零件编号之间双向转换，避免零件显示成"?" |
+| **效果图** | MCP 返回的图片只有 AI 能看到，所以渲染结果会存成 PNG 并返回路径，也可以直接用系统看图软件打开 |
+| **搜索** | 结果按相关度排序，词序不限，兼容 color/colour，支持 `spike hub`、`45609` 这样的乐高名称和编号 |
+| **零件尺寸** | 名称里没有尺寸的零件（如电子件）按实际模型计算 |
+| **渲染频率** | 默认不再每步渲染，减少等待和对话占用 |
+
+## 安装（macOS，不用 Nix）
+
+需要 Python ≥ 3.14。下面用 conda，其他虚拟环境同理。
+
+**1. 安装 brick-mcp**
+
+```bash
+git clone https://github.com/makerseed201808/brick-mcp.git ~/brick-mcp
 ```
 
-## MCP client configuration
+```bash
+conda create -y -n brick-mcp -c conda-forge python=3.14
+```
 
-### VS Code
+```bash
+conda run -n brick-mcp python -m pip install -e ~/brick-mcp
+```
 
-The repository ships a ready-to-use `.vscode/mcp.json` using Nix:
+**2. 下载 LDraw 零件库**（约 140 MB，解压后约 550 MB）
+
+```bash
+mkdir -p ~/ldraw && curl -fL -o ~/ldraw/complete.zip https://library.ldraw.org/library/updates/complete.zip
+```
+
+```bash
+cd ~/ldraw && unzip -q complete.zip
+```
+
+没有零件库也能运行，但只能搜到约 80 个常用零件。
+
+**3. 安装 LDView（用于渲染，可选）**
+
+从 [LDView 发布页](https://github.com/tcobbs/ldview/releases) 下载 macOS 的 `.dmg`，把 `LDView.app` 拖到 `/Applications` 或 `~/Applications`。
+
+**4. 安装 BrickLink Studio（可选）**
+
+装在默认位置 `/Applications/Studio 2.0` 时会自动识别，零件编号转换依赖它的零件表。
+
+**5. 配置 Claude Desktop**
+
+先**完全退出 Claude Desktop（⌘Q）**，再编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`，保留其他已有内容，然后重新打开。App 运行时可能会重写这个文件，把你的修改覆盖掉。
+
+路径要写绝对路径，并把 `YOU` 换成你的用户名；`command` 用 `conda run -n brick-mcp which python` 输出的路径。
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "bricks": {
-      "type": "stdio",
-      "command": "nix",
-      "args": ["run", "/path/to/brick-mcp"]
+      "command": "/opt/anaconda3/envs/brick-mcp/bin/python",
+      "args": ["/Users/YOU/brick-mcp/main.py"],
+      "env": {
+        "LDRAW_COMPLETE_ZIP": "/Users/YOU/ldraw/complete.zip"
+      }
     }
   }
 }
 ```
 
-Replace `/path/to/brick-mcp` with the path to your local clone, or use `github:datakurre/brick-mcp` to run directly from GitHub without cloning.
+### 环境变量
 
-### Claude Desktop (`claude_desktop_config.json`)
+| 变量 | 作用 |
+|---|---|
+| `LDRAW_COMPLETE_ZIP` | LDraw `complete.zip` 的路径 |
+| `LDRAW_DIR` | 解压后的零件库目录，供 LDView 使用（默认取 zip 旁边的 `ldraw/`） |
+| `LDVIEW_BIN` | LDView 程序路径 |
+| `STUDIO_DIR` | Studio 安装目录（默认 `/Applications/Studio 2.0`） |
+| `BRICK_MCP_AUTO_RENDER` | 设为 `1` 时每次编辑都附带渲染图（默认关闭） |
+
+### 使用 Nix
+
+原作者推荐的方式，会自动处理依赖，但下面的命令运行的是上游版本，不包含这个 fork 的改动：
 
 ```json
 {
@@ -54,129 +119,75 @@ Replace `/path/to/brick-mcp` with the path to your local clone, or use `github:d
 }
 ```
 
-### Without Nix (local Python)
+## 使用示例
 
-```json
-{
-  "mcpServers": {
-    "bricks": {
-      "command": "python",
-      "args": ["/path/to/brick-mcp/main.py"]
-    }
-  }
-}
+直接用自然语言告诉 AI：
+
+> 用 SPIKE Essential 的主机和两个马达搭一辆小车，保存到 ~/Documents/car.io，然后渲染给我看。
+
+底层的调用流程大致是：
+
+```text
+search_parts("spike hub")                      查找零件
+get_part_footprint("67351c01")                 查询尺寸
+batch([...add_part..., check_overlaps, ...])   批量搭建并检查碰撞
+save_model("~/Documents/car.io")               保存，并生成 car_preview.png
+render_model(open_in_viewer=True)              渲染并打开图片
 ```
 
-## Typical workflow
+### SPIKE 零件
 
+LDraw 的零件名里没有 "SPIKE" 字样，但下面这些搜索词都能找到对应零件：
+
+| 零件 | 搜索词 | LDraw 编号 | Studio 编号 |
+|---|---|---|---|
+| Essential 主机 | `spike hub`、`45609` | `67351c01` | `67351-bl` |
+| 小型角度马达 | `spike essential motor`、`45607` | `68488` | `68488c01-bl` |
+| 颜色传感器 | `color sensor`、`45605` | `37308` | `37308c01` |
+| 3×3 光矩阵 | `light matrix`、`45608` | `47592` | `47592c01-bl` |
+
+Studio 只有带线缆的版本，所以 `68488`、`37308`、`47592` 这类不带线缆的编号，保存为 `.io` 时会换成带线缆的版本。
+
+## 工具列表
+
+| 分类 | 工具 |
+|---|---|
+| 文件 | `new_model` `open_model` `save_model` `get_model_info` |
+| 查看 | `list_parts` `get_bom` `get_steps` |
+| 编辑 | `add_part` `remove_part` `move_part` `rotate_part` `change_color` `batch` |
+| 步骤 | `add_step` `remove_step`（编号与 `get_steps` 一致） |
+| 布局 | `check_overlaps` `validate_placement` `snap_to_grid` `get_part_footprint` |
+| 零件和颜色 | `search_parts` `get_part_details` `list_colors` `get_color_info` |
+| 渲染 | `render_model` |
+
+## 坐标系
+
+LDraw 的单位是 **LDU**：
+
+| 尺寸 | LDU |
+|---|---|
+| 1 个凸点宽 | 20 |
+| 1 块砖高 | 24 |
+| 1 块板高 | 8 |
+
+**Y 轴向下为正**：`y=0` 是底面，`y=-24` 是往上一层砖。X 和 Z 是水平方向。
+
+常用颜色：`0` 黑、`1` 蓝、`2` 绿、`4` 红、`14` 黄、`15` 白、`71` 浅蓝灰、`72` 深蓝灰，完整列表用 `list_colors()` 查询。
+
+## 已知限制
+
+- 渲染由 LDView 完成，是带边线的示意风格。照片质感的效果图请在 Studio 里用 Render 出图。
+- 电子件的碰撞检查偏保守：带线缆的零件会把线缆算进尺寸，部分零件的高度包含顶部凸点，因此可能多报冲突。
+- 只在 Studio 里才有的零件，LDView 无法渲染，预览图中可能缺件。
+- SPIKE 的元件编号（如 45609）是人工整理的，没有逐一对照官方资料。
+- 目前只在 macOS（Apple Silicon）和 Studio 2.26.10 上测试过。
+
+## 开发
+
+```bash
+conda run -n brick-mcp python -m pip install pytest
 ```
-1. open_model("path/to/model.io")   — load a file
-2. list_parts()                      — see what's inside
-3. change_color("abc123", 4)         — change a part to Red
-4. add_part("3001.dat", 4, x=0, y=-24, z=0)  — place a new 2×4 brick
-5. save_model()                      — write back to the original file
+
+```bash
+conda run -n brick-mcp python -m pytest
 ```
-
-## Tool reference
-
-### File operations
-
-| Tool | Description |
-|---|---|
-| `new_model(name)` | Create a new empty model in memory. |
-| `open_model(path)` | Open a `.io`, `.ldr`, or `.mpd` file. Assigns session IDs to all parts. |
-| `save_model(path)` | Save the model. Omit `path` to overwrite the source file. |
-| `get_model_info()` | Return filename, submodels, total part count, dirty flag. |
-
-### Inspection
-
-| Tool | Description |
-|---|---|
-| `list_parts(submodel)` | List all parts with IDs, colors, positions, and rotations. |
-| `get_bom(submodel)` | Bill of materials grouped by part number and color. |
-| `get_steps(submodel)` | Building-instruction step boundaries and part counts per step. |
-
-### Editing
-
-| Tool | Description |
-|---|---|
-| `add_part(part_number, color, x, y, z, rotation_matrix, submodel)` | Add a part and return its new session ID. |
-| `remove_part(part_id, submodel)` | Delete a part by its session ID. |
-| `move_part(part_id, x, y, z, submodel)` | Move a part to new absolute coordinates. |
-| `rotate_part(part_id, rotation_matrix, submodel)` | Replace a part's rotation matrix. |
-| `change_color(part_id, color, submodel)` | Recolor a part. |
-| `add_step(submodel)` | Append a STEP marker (building-instruction boundary). |
-| `remove_step(step_index, submodel)` | Remove a STEP marker by index. |
-
-### Parts & colors database
-
-| Tool | Description |
-|---|---|
-| `search_parts(query)` | Search the built-in parts database by name or number. |
-| `list_colors()` | All LDraw color codes with names and hex values. |
-| `get_color_info(color_code)` | Details for a specific color code. |
-
-## Coordinate system
-
-LDraw uses **LDU** (LDraw Units). Key measurements:
-
-| Measurement | LDU |
-|---|---|
-| 1 stud width | 20 |
-| 1 brick height | 24 |
-| 1 plate height | 8 |
-
-The **Y-axis is inverted**: `y=0` is the build plate, `y=-24` is one brick above it. X and Z are the horizontal plane.
-
-## Common LDraw color codes
-
-| Code | Color |
-|---|---|
-| 0 | Black |
-| 1 | Blue |
-| 2 | Green |
-| 4 | Red |
-| 14 | Yellow |
-| 15 | White |
-| 71 | Light Bluish Gray |
-| 72 | Dark Bluish Gray |
-
-Use `list_colors()` for the full list.
-
-## Common part numbers
-
-| Part | Number |
-|---|---|
-| Brick 1×1 | 3005 |
-| Brick 1×2 | 3004 |
-| Brick 1×4 | 3010 |
-| Brick 2×2 | 3003 |
-| Brick 2×4 | 3001 |
-| Plate 1×1 | 3024 |
-| Plate 1×2 | 3023 |
-| Plate 2×4 | 3020 |
-
-Use `search_parts("brick 2x4")` to find part numbers you don't know.
-
-## Running on macOS without Nix
-
-Everything works from a plain Python environment once these are in place:
-
-- **Parts library**: download `complete.zip` from <https://library.ldraw.org/library/updates/complete.zip>,
-  unzip it next to the zip file (giving `.../ldraw/parts`), and set `LDRAW_COMPLETE_ZIP` to the
-  zip's path. Without it, only about 80 common parts are searchable.
-- **Rendering**: install [LDView](https://github.com/tcobbs/ldview/releases) to `/Applications` or
-  `~/Applications`, or point `LDVIEW_BIN` at its binary.
-- **BrickLink Studio**: if installed in `/Applications/Studio 2.0` (or `STUDIO_DIR`), part names are
-  converted on `.io` save and open so that Studio shows them instead of "?" boxes.
-
-| Variable | Purpose |
-| --- | --- |
-| `LDRAW_COMPLETE_ZIP` | Path to the LDraw `complete.zip` |
-| `LDRAW_DIR` | Unpacked LDraw library for LDView (default: `ldraw/` next to the zip) |
-| `LDVIEW_BIN` | Path to the LDView binary |
-| `STUDIO_DIR` | BrickLink Studio install folder |
-| `BRICK_MCP_AUTO_RENDER` | Set to `1` to attach a render to every edit (default off) |
-
-`render_model` saves a PNG and returns its path, and `save_model` writes `<name>_preview.png`
-next to the model, because images returned over MCP are visible to the assistant but not the user.
