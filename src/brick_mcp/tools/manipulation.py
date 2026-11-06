@@ -223,16 +223,19 @@ def add_step(submodel: str = "") -> list | dict | Image:
 
 @mcp.tool
 def remove_step(step_index: int, submodel: str = "") -> list | dict | Image:
-    """Remove a STEP boundary by its 0-based index.
+    """Remove a building step, numbered exactly as get_steps() reports it.
 
-    Parts from the removed step merge into the previous step.
+    Parts from the removed step merge into the previous step (removing step 0
+    merges it into step 1).  A model with a single step has nothing to remove.
 
     Args:
-        step_index: 0-based index of the STEP marker to remove.
+        step_index: 0-based step_index as returned by get_steps().
         submodel: Name of submodel. Leave empty for root.
 
     Returns:
         {"removed_step_index": N, "step_count": M} or an error if not found.
+        step_count is the number of STEP markers left (get_steps() returns
+        step_count + 1 steps).
     """
     try:
         project = get_model()

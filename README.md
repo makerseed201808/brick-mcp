@@ -157,3 +157,26 @@ Use `list_colors()` for the full list.
 | Plate 2×4 | 3020 |
 
 Use `search_parts("brick 2x4")` to find part numbers you don't know.
+
+## Running on macOS without Nix
+
+Everything works from a plain Python environment once these are in place:
+
+- **Parts library**: download `complete.zip` from <https://library.ldraw.org/library/updates/complete.zip>,
+  unzip it next to the zip file (giving `.../ldraw/parts`), and set `LDRAW_COMPLETE_ZIP` to the
+  zip's path. Without it, only about 80 common parts are searchable.
+- **Rendering**: install [LDView](https://github.com/tcobbs/ldview/releases) to `/Applications` or
+  `~/Applications`, or point `LDVIEW_BIN` at its binary.
+- **BrickLink Studio**: if installed in `/Applications/Studio 2.0` (or `STUDIO_DIR`), part names are
+  converted on `.io` save and open so that Studio shows them instead of "?" boxes.
+
+| Variable | Purpose |
+| --- | --- |
+| `LDRAW_COMPLETE_ZIP` | Path to the LDraw `complete.zip` |
+| `LDRAW_DIR` | Unpacked LDraw library for LDView (default: `ldraw/` next to the zip) |
+| `LDVIEW_BIN` | Path to the LDView binary |
+| `STUDIO_DIR` | BrickLink Studio install folder |
+| `BRICK_MCP_AUTO_RENDER` | Set to `1` to attach a render to every edit (default off) |
+
+`render_model` saves a PNG and returns its path, and `save_model` writes `<name>_preview.png`
+next to the model, because images returned over MCP are visible to the assistant but not the user.

@@ -246,16 +246,23 @@ class StudioProject:
         return self._count_steps(sd)
 
     def remove_step(self, step_index: int, submodel: str | None) -> bool:
-        """Remove the step boundary at step_index (0-based). Returns True if found."""
+        """Remove step step_index, using the same 0-based numbering as get_steps().
+
+        The step's parts merge into the previous step (step 0 merges into
+        step 1).  Returns False if the index is out of range or there is only
+        one step.
+        """
         sd = self._submodel(submodel)
         step_cmds = [
             (i, cmd)
             for i, cmd in enumerate(sd.commands)
             if isinstance(cmd, MetaCommand) and cmd.text == "STEP"
         ]
-        if step_index < 0 or step_index >= len(step_cmds):
+        # get_steps() reports len(step_cmds) + 1 steps; step k is closed by
+        # marker k, so dropping marker k-1 merges step k into step k-1.
+        if not step_cmds or step_index < 0 or step_index > len(step_cmds):
             return False
-        cmd_index, _cmd = step_cmds[step_index]
+        cmd_index, _cmd = step_cmds[max(step_index - 1, 0)]
         del sd.commands[cmd_index]
         self._dirty = True
         return True

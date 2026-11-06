@@ -4,32 +4,72 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
+import sys
 
 from fastmcp.utilities.types import Image
 
-from brick_mcp._helpers import _egl_env, _find_ldview, err
+from brick_mcp._helpers import _find_ldview, err, ok, run_ldview
 from brick_mcp.model import get_model as _get_model
 from brick_mcp.server import mcp
 
 
+def _output_path(project, output_path: str, latitude: float, longitude: float) -> str:
+    """Pick where to save: output_path, else next to the model, else user folders."""
+    if output_path.strip():
+        return os.path.abspath(os.path.expanduser(output_path.strip()))
+
+    source = project.source_path
+    stem = os.path.splitext(os.path.basename(source or project.root_submodel))[0]
+    name = f"{stem}_render.png"
+    if (latitude, longitude) != (30, 45):
+        name = f"{stem}_render_lat{latitude:g}_lon{longitude:g}.png"
+
+    candidates = [
+        os.path.dirname(source) if source else "",
+        os.path.expanduser("~/Documents/brick-mcp/renders"),
+        os.path.expanduser("~/brick-mcp-renders"),
+    ]
+    for folder in candidates:
+        if not folder:
+            continue
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            continue
+        if os.access(folder, os.W_OK):
+            return os.path.join(folder, name)
+    return os.path.abspath(name)
+
+
 @mcp.tool
 def render_model(
-    width: int = 800,
-    height: int = 600,
+    width: int = 1280,
+    height: int = 800,
     latitude: float = 30,
     longitude: float = 45,
-) -> Image | dict:
-    """Render the current model to a PNG image.
+    output_path: str = "",
+    open_in_viewer: bool = False,
+) -> list | dict | Image:
+    """Render the current model to a PNG file and return its path and the image.
 
-    Returns a PNG snapshot of the model from the given camera angle.
-    Requires `ldview` on PATH or in the Nix store.
+    The returned image is only visible to the assistant, NOT to the user.  To show
+    the user the result, tell them the returned path, and pass open_in_viewer=True
+    when they ask to see it.
+
+    Requires `ldview` on PATH, in the Nix store, at $LDVIEW_BIN, or LDView.app
+    in /Applications or ~/Applications (macOS).
 
     Args:
-        width:     Image width in pixels.
-        height:    Image height in pixels.
+        width:     Maximum image width in pixels (the image is cropped to the model).
+        height:    Maximum image height in pixels.
         latitude:  Camera latitude in degrees (default 30 = standard two-thirds view).
         longitude: Camera longitude in degrees (default 45 = standard two-thirds view).
+        output_path: PNG path to write. Default: next to the saved model, else
+                   ~/Documents/brick-mcp/renders.
+        open_in_viewer: Also open the PNG in the system image viewer (macOS).
+
+    Returns:
+        [{"path": "...", ...}, Image] on success, or an error dict.
     """
     try:
         project = _get_model()
@@ -39,60 +79,48 @@ def render_model(
     ldview_bin = _find_ldview()
     if ldview_bin is None:
         return err(
-            "ldview binary not found on PATH or in the Nix store. Install the ldview Nix package.",
+            "ldview binary not found on PATH, in the Nix store or as LDView.app. "
+            "Install the ldview Nix package, or on macOS LDView.app, or set LDVIEW_BIN.",
             "LDVIEW_NOT_FOUND",
         )
 
-    with tempfile.TemporaryDirectory(prefix="brick-mcp-render-") as tmpdir:
-        ldr_path = os.path.join(tmpdir, "model.ldr")
-        png_path = os.path.join(tmpdir, "model.png")
+    png_path = _output_path(project, output_path, latitude, longitude)
+    try:
+        os.makedirs(os.path.dirname(png_path), exist_ok=True)
+        if os.path.exists(png_path):
+            os.remove(png_path)
+        result = run_ldview(
+            ldview_bin, project, png_path, width, height, latitude, longitude, 120
+        )
+    except FileNotFoundError:
+        return err("ldview binary not found.", "LDVIEW_NOT_FOUND")
+    except subprocess.TimeoutExpired:
+        return err("LDView render timed out after 120 s.", "RENDER_TIMEOUT")
+    except OSError as exc:
+        return err(f"Cannot write render to {png_path}: {exc}", "RENDER_FAILED")
 
-        # Write current model as standard LDraw text (LDView understands type-1).
-        ldr_text = project.to_ldraw_text()
-        with open(ldr_path, "w") as fh:
-            fh.write(ldr_text)
+    if not os.path.isfile(png_path):
+        stderr = (
+            result.stderr.decode(errors="replace").strip()
+            if result.stderr
+            else "(no stderr)"
+        )
+        return err(
+            f"LDView did not produce an image (exit {result.returncode}): {stderr}",
+            "RENDER_FAILED",
+        )
 
-        cmd = [
-            ldview_bin,
-            ldr_path,
-            f"-SaveSnapshot={png_path}",
-            f"-SaveWidth={width}",
-            f"-SaveHeight={height}",
-            f"-DefaultLatLong={latitude},{longitude}",
-            "-SaveActualSize=0",
-            "-SaveZoomToFit=1",
-            "-ShowHighlightLines=1",
-            "-EdgeThickness=1.5",
-            "-LineSmoothing=1",
-            "-ShowErrors=0",
-            "-SaveAlpha=0",
-        ]
+    if open_in_viewer and sys.platform == "darwin":
+        subprocess.Popen(["open", png_path])
 
-        env = {**os.environ, **_egl_env()}
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=120,
-                env=env,
-            )
-        except FileNotFoundError:
-            return err("ldview binary not found.", "LDVIEW_NOT_FOUND")
-        except subprocess.TimeoutExpired:
-            return err("LDView render timed out after 120 s.", "RENDER_TIMEOUT")
+    with open(png_path, "rb") as fh:
+        png_bytes = fh.read()
 
-        if not os.path.isfile(png_path):
-            stderr = (
-                result.stderr.decode(errors="replace").strip()
-                if result.stderr
-                else "(no stderr)"
-            )
-            return err(
-                f"LDView did not produce an image (exit {result.returncode}): {stderr}",
-                "RENDER_FAILED",
-            )
-
-        with open(png_path, "rb") as fh:
-            png_bytes = fh.read()
-
-    return Image(data=png_bytes, format="png")
+    return [
+        ok(
+            {"path": png_path, "opened_in_viewer": open_in_viewer},
+            f"Render saved to {png_path} (tell the user this path; "
+            "the image itself is only visible to the assistant)",
+        ),
+        Image(data=png_bytes, format="png"),
+    ]

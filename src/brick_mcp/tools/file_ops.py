@@ -7,7 +7,7 @@ import os
 from fastmcp.utilities.types import Image
 
 from brick_mcp import io_file, ldraw
-from brick_mcp._helpers import err, ok, ok_with_render
+from brick_mcp._helpers import err, ok, ok_with_render, try_render_to_file
 from brick_mcp.model import StudioProject, get_model, set_model
 from brick_mcp.server import mcp
 
@@ -88,6 +88,9 @@ def save_model(path: str = "") -> list | dict | Image:
               Use a .io extension for BrickLink Studio format (encrypted ZIP).
               Use a .ldr extension for plain LDraw text.
 
+    Also writes <name>_preview.png next to the file when LDView is available;
+    tell the user that path so they can see the model.
+
     Returns:
         Success message with the saved path, or an error dict.
     """
@@ -121,6 +124,15 @@ def save_model(path: str = "") -> list | dict | Image:
 
     project.source_path = save_path
     project._dirty = False
+    preview = try_render_to_file(
+        project, f"{os.path.splitext(save_path)[0]}_preview.png"
+    )
+    if preview:
+        return ok_with_render(
+            project,
+            {"path": save_path, "preview_path": preview},
+            f"Saved to {save_path}; preview image for the user: {preview}",
+        )
     return ok_with_render(project, message=f"Saved to {save_path}")
 
 

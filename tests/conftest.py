@@ -19,6 +19,14 @@ def fresh_model():
 
 
 @pytest.fixture(autouse=True)
+def _no_studio(monkeypatch):
+    """Keep results independent of whether BrickLink Studio is installed here."""
+    from brick_mcp import studio
+
+    monkeypatch.setattr(studio, "_known", set())
+
+
+@pytest.fixture(autouse=True)
 def _no_ldview():
     """Prevent try_render from finding ldview so mutation tools return plain dicts."""
     with patch("brick_mcp._helpers._find_ldview", return_value=None):

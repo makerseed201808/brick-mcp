@@ -12,19 +12,47 @@ Archive contents:
 
 Read strategy:  plain ZIP first → AES fallback.
                 modelv2.ldr preferred over model.ldr (Studio reads it).
+                Studio-only part names are mapped back to LDraw names.
 Write strategy: always write as plain (unencrypted) ZIP so Studio can open it.
-                Write model.ldr (type-1) + modelv2.ldr (type-11, regenerated).
+                Write model.ldr (type-1) + modelv2.ldr (type-11, regenerated),
+                plus .info and errorPartList.err (Studio requires .info).
                 Drop old modelv2.ldr / model2.ldr from preserved extras.
+                Part names Studio doesn't know are mapped to the ones it does.
 """
 
 from __future__ import annotations
 
+import json
 import zipfile as _zipfile
+
+from brick_mcp import studio
 
 IO_PASSWORD = b"soho0909"
 
 # Files handled explicitly; never copied blindly from raw_zip_entries.
-_MANAGED_ENTRIES = {"model.ldr", "modelv2.ldr", "model2.ldr"}
+_MANAGED_ENTRIES = {
+    "model.ldr",
+    "modelv2.ldr",
+    "model2.ldr",
+    ".info",
+    "errorPartList.err",
+}
+
+# Written on every save: Studio refuses .io files without a .info entry.
+_PARTS_DB_VERSION = 200
+
+
+def _remap_line(line: str, mapper) -> str:
+    parts = line.split()
+    if parts and parts[0] in ("1", "11") and parts[-1].lower().endswith(".dat"):
+        mapped = mapper(parts[-1])
+        if mapped != parts[-1]:
+            return line[: line.rfind(parts[-1])] + mapped
+    return line
+
+
+def _remap_text(text: str, mapper) -> str:
+    return "\n".join(_remap_line(l, mapper) for l in text.split("\n"))
 
 
 def _open_zip(path: str):
@@ -82,7 +110,11 @@ def read_io_file(path: str) -> tuple[bytes, dict[str, bytes]]:
             raise KeyError(
                 f"Neither model.ldr nor modelv2.ldr found in {path}. Contents: {names}"
             )
-        model_bytes = zf.read(primary_name)
+        # Back to LDraw names: the catalog and LDView don't know Studio-only ones.
+        model_bytes = _remap_text(
+            zf.read(primary_name).decode("utf-8", errors="replace"),
+            studio.from_studio_part,
+        ).encode("utf-8")
         others = {n: zf.read(n) for n in names if n not in _MANAGED_ENTRIES}
 
     return model_bytes, others
@@ -105,10 +137,22 @@ def write_io_file(
         model_v2_text: BrickLink Studio v2 format (type-11).  When non-empty,
                        written as modelv2.ldr so Studio picks up the changes.
     """
+    model_ldr_text = _remap_text(model_ldr_text, studio.to_studio_part)
+    model_v2_text = _remap_text(model_v2_text, studio.to_studio_part)
+    part_count = sum(
+        1 for l in model_ldr_text.split("\n") if l.split()[:1] == ["1"]
+    )
+    info = {
+        "version": studio.version(),
+        "total_parts": part_count,
+        "parts_db_version": _PARTS_DB_VERSION,
+    }
     with _zipfile.ZipFile(path, "w", compression=_zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("model.ldr", model_ldr_text.encode("utf-8"))
         if model_v2_text:
             zf.writestr("modelv2.ldr", model_v2_text.encode("utf-8"))
+        zf.writestr(".info", json.dumps(info, separators=(",", ":")).encode("utf-8"))
+        zf.writestr("errorPartList.err", b"[]")
         for name, data in extra_entries.items():
             if name not in _MANAGED_ENTRIES:
                 zf.writestr(name, data)

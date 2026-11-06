@@ -7,17 +7,22 @@ Provides:
   - get_part_dims()    -- (x_half, y_full, z_half) bounding-box half-extents (LDU)
   - part_aabb()        -- world-space AABB for a placed part
   - aabbs_overlap()    -- AABB overlap test
+  - get_part_bbox()    -- true bounding box from part geometry (needs complete.zip)
 
 The LDraw complete.zip is bundled in the ldview Nix derivation at
   /nix/store/*-ldview-*/share/ldraw/complete.zip
+Set LDRAW_COMPLETE_ZIP to use a complete.zip elsewhere (e.g. without Nix).
 A fallback hard-coded table of ~100 common parts is used when the zip is absent.
 """
 
 from __future__ import annotations
 
 import glob
+import os
 import re
 import zipfile
+
+from brick_mcp import studio
 
 # ---------------------------------------------------------------------------
 # Fallback parts table (used when complete.zip is unavailable)
@@ -179,6 +184,9 @@ _catalog: dict[str, dict[str, str]] | None = None
 
 
 def _locate_complete_zip() -> str | None:
+    env_path = os.environ.get("LDRAW_COMPLETE_ZIP")
+    if env_path and os.path.isfile(env_path):
+        return env_path
     candidates = sorted(
         glob.glob("/nix/store/*-ldview-*/share/ldraw/complete.zip"), reverse=True
     )
@@ -188,6 +196,7 @@ def _locate_complete_zip() -> str | None:
 def _guess_category(name: str) -> str:
     nl = name.lower()
     for kw, cat in [
+        ("electric", "Electric"),
         ("plate", "Plate"),
         ("tile", "Tile"),
         ("slope", "Slope"),
@@ -263,25 +272,113 @@ def get_catalog() -> dict[str, dict[str, str]]:
     return _catalog
 
 
-def search_catalog(query: str, limit: int = 20) -> list[dict[str, str]]:
-    """Search catalog by name or part-number substring (case-insensitive).
+# Names people search by that LDraw titles don't contain.  Maps part -> extra
+# search terms; hits on these rank first.  455xx are LEGO element set numbers.
+_SPIKE_ESSENTIAL = "spike essential"
+_SPIKE_PRIME = "spike prime"
+_ALIASES: dict[str, str] = {
+    "67351.dat": f"{_SPIKE_ESSENTIAL} {_SPIKE_PRIME} hub small 2 port 45609",
+    "67351c01.dat": f"{_SPIKE_ESSENTIAL} {_SPIKE_PRIME} hub small 2 port 45609",
+    "68488.dat": f"{_SPIKE_ESSENTIAL} motor small angular 45607",
+    "68488c01.dat": f"{_SPIKE_ESSENTIAL} motor small angular 45607",
+    "37308.dat": f"{_SPIKE_ESSENTIAL} {_SPIKE_PRIME} color sensor 45605",
+    "37308c01.dat": f"{_SPIKE_ESSENTIAL} {_SPIKE_PRIME} color sensor 45605",
+    "47592.dat": f"{_SPIKE_ESSENTIAL} color light matrix 45608",
+    "47592c01.dat": f"{_SPIKE_ESSENTIAL} color light matrix 45608",
+    "45601.dat": f"{_SPIKE_PRIME} hub large 6 port 45601",
+    "45601c01.dat": f"{_SPIKE_PRIME} hub large 6 port 45601",
+    "54675c01.dat": f"{_SPIKE_PRIME} motor large angular 45602",
+    "54696p02c01.dat": f"{_SPIKE_PRIME} motor medium angular 45603",
+    "37316c01.dat": f"{_SPIKE_PRIME} distance sensor 45604",
+    "37312c01.dat": f"{_SPIKE_PRIME} force sensor 45606",
+}
 
-    "2x4" is automatically expanded to "2 x 4" for matching LDraw names.
-    Runs of whitespace in both query and part names are collapsed to a single
-    space before matching (LDraw titles sometimes use double spaces).
+_DIM_TERM = re.compile(r"\d+(?:\.\d+)?(?: x \d+(?:\.\d+)?)+")
+_search_index: tuple[int, dict[str, str]] | None = None
+
+
+def _normalize(text: str) -> str:
+    """Lowercase, unify spelling, and turn "2x4" into "2 x 4"."""
+    t = re.sub(r"\s+", " ", text.lower().strip())
+    t = t.replace("colour", "color").replace("grey", "gray")
+    return re.sub(r"(?<=\d) ?x ?(?=\d)", " x ", t)
+
+
+def _index(catalog: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Return part -> normalized search text, cached per catalog."""
+    global _search_index
+    if _search_index is None or _search_index[0] != id(catalog):
+        _search_index = (
+            id(catalog),
+            {
+                pn: _normalize(
+                    f"{info['name']} {pn} {_ALIASES.get(pn, '')} "
+                    f"{studio.description(pn)}"
+                )
+                for pn, info in catalog.items()
+            },
+        )
+    return _search_index[1]
+
+
+def _query_terms(query: str) -> list[re.Pattern[str]]:
+    """Split a normalized query into patterns that must all match.
+
+    Dimensions match whole ("2 x 4" not inside "12 x 4"); words match as substrings.
+    """
+    terms = [
+        re.compile(rf"(?<![\d.]){re.escape(m)}(?![\d.])")
+        for m in _DIM_TERM.findall(query)
+    ]
+    words = _DIM_TERM.sub(" ", query).split()
+    return terms + [re.compile(re.escape(w)) for w in words]
+
+
+def _is_hidden(info: dict[str, str]) -> bool:
+    """True for subparts (~), aliases (=), and obsolete parts (_)."""
+    return info["name"][:1] in ("~", "=", "_") or info["category"] == "Obsolete"
+
+
+def search_catalog(
+    query: str, limit: int = 20, include_subparts: bool = False
+) -> list[dict[str, str]]:
+    """Search catalog by name or part number, best matches first (case-insensitive).
+
+    All query words must match, in any order.  "2x4" matches "2 x 4", "colour"
+    matches "color", and common names such as "spike hub" or "45609" are
+    understood.  Plain parts rank above patterned ones and shorter names above
+    longer ones.  Subparts, aliases and obsolete parts are left out unless
+    include_subparts is set or nothing else matches.
     """
     catalog = get_catalog()
-    q = re.sub(r"\s+", " ", query.lower().strip())
-    q_spaced = re.sub(r"(\d)x(\d)", r"\1 x \2", q)
-    results: list[dict[str, str]] = []
-    for info in catalog.values():
-        pn = info["part_number"].lower()
-        nm = re.sub(r"\s+", " ", info["name"].lower())
-        if q in pn or q in nm or (q_spaced != q and q_spaced in nm):
-            results.append(info)
-            if len(results) >= limit:
-                break
-    return results
+    index = _index(catalog)
+    q = _normalize(query)
+    terms = _query_terms(q)
+
+    matches: list[tuple[tuple, dict[str, str]]] = []
+    for pn, info in catalog.items():
+        text = index[pn]
+        if not all(t.search(text) for t in terms):
+            continue
+        base = pn.removesuffix(".dat")
+        name = _normalize(info["name"])
+        alias = _normalize(_ALIASES.get(pn, ""))
+        key = (
+            base != q,
+            not (alias and all(t.search(alias) for t in terms)),
+            not all(t.search(name) for t in terms),
+            not name.startswith(q),
+            "pattern" in name or "sticker" in name,
+            len(name),
+            pn,
+        )
+        matches.append((key, info))
+
+    visible = [m for m in matches if not _is_hidden(m[1])]
+    if not include_subparts and visible:
+        matches = visible
+    matches.sort(key=lambda m: m[0])
+    return [info for _key, info in matches[:limit]]
 
 
 def get_part_info(part_number: str) -> dict[str, str] | None:
@@ -314,6 +411,110 @@ def _dims_from_name(name: str) -> tuple[float, float, float]:
     return (x_half, y_full, z_half)
 
 
+# ---------------------------------------------------------------------------
+# Part geometry (true bounding boxes from complete.zip)
+# ---------------------------------------------------------------------------
+
+Point = tuple[float, float, float]
+BBox = tuple[float, float, float, float, float, float]
+
+_geom_zip: zipfile.ZipFile | None = None
+_geom_entries: dict[str, str] | None = None
+_geom_points: dict[str, set[Point]] = {}
+_bbox_cache: dict[str, BBox | None] = {}
+
+
+def _geometry_entries() -> dict[str, str]:
+    """Return lowercase file path (relative to parts/ or p/) -> zip entry name."""
+    global _geom_zip, _geom_entries
+    if _geom_entries is None:
+        _geom_entries = {}
+        zip_path = _locate_complete_zip()
+        if zip_path:
+            _geom_zip = zipfile.ZipFile(zip_path)
+            for entry in _geom_zip.namelist():
+                low = entry.lower()
+                for prefix in ("ldraw/p/", "ldraw/parts/"):  # parts/ wins over p/
+                    if low.startswith(prefix):
+                        _geom_entries[low[len(prefix) :]] = entry
+    return _geom_entries
+
+
+def _file_points(ref: str, stack: tuple[str, ...] = ()) -> set[Point]:
+    """Return every vertex of an LDraw file and the files it references."""
+    ref = ref.lower().replace("\\", "/")
+    if ref in _geom_points:
+        return _geom_points[ref]
+    entry = _geometry_entries().get(ref)
+    if entry is None or ref in stack:
+        return set()
+
+    points: set[Point] = set()
+    for raw in _geom_zip.read(entry).decode("utf-8", "replace").splitlines():
+        fields = raw.split()
+        if not fields:
+            continue
+        try:
+            if fields[0] in ("3", "4"):
+                nums = [float(v) for v in fields[2:]]
+                points.update(
+                    (nums[i], nums[i + 1], nums[i + 2])
+                    for i in range(0, len(nums) - 2, 3)
+                )
+            elif fields[0] == "1" and len(fields) >= 15:
+                x, y, z, a, b, c, d, e, f, g, h, i = (float(v) for v in fields[2:14])
+                for px, py, pz in _file_points(" ".join(fields[14:]), (*stack, ref)):
+                    points.add(
+                        (
+                            round(x + a * px + b * py + c * pz, 3),
+                            round(y + d * px + e * py + f * pz, 3),
+                            round(z + g * px + h * py + i * pz, 3),
+                        )
+                    )
+        except ValueError:
+            continue
+    _geom_points[ref] = points
+    return points
+
+
+def get_part_bbox(part_number: str) -> BBox | None:
+    """Return a part's true (xmin,xmax,ymin,ymax,zmin,zmax) about its origin.
+
+    Computed from the part's geometry, so it needs complete.zip; None without it.
+    """
+    pn = part_number.lower().strip()
+    if not pn.endswith(".dat"):
+        pn += ".dat"
+    if pn not in _bbox_cache:
+        pts = _file_points(pn)
+        if pts:
+            xs, ys, zs = zip(*pts)
+            _bbox_cache[pn] = (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+        else:
+            _bbox_cache[pn] = None
+        # Vertex sets of subparts are only needed while computing a part.
+        if len(_geom_points) > 2000:
+            _geom_points.clear()
+    return _bbox_cache[pn]
+
+
+def measured_bbox(part_number: str) -> BBox | None:
+    """Return the geometry bbox for parts whose size can't be known otherwise.
+
+    Standard parts keep the tidy stud-based dimensions from the table or their
+    name (geometry would count studs as height and flag stacked bricks).
+    """
+    pn = part_number.lower().strip()
+    if not pn.endswith(".dat"):
+        pn += ".dat"
+    if pn in _PART_DIMS:
+        return None
+    info = get_part_info(pn)
+    if info and _DIM_PATTERN.search(info["name"]):
+        return None
+    return get_part_bbox(pn)
+
+
 def get_part_dims(part_number: str) -> tuple[float, float, float]:
     """Return (x_half, y_full, z_half) AABB half-extents in LDU.
 
@@ -328,6 +529,10 @@ def get_part_dims(part_number: str) -> tuple[float, float, float]:
     hard = _PART_DIMS.get(pn)
     if hard:
         return hard
+    bbox = measured_bbox(pn)
+    if bbox:
+        xmin, xmax, ymin, ymax, zmin, zmax = bbox
+        return ((xmax - xmin) / 2.0, ymax - ymin, (zmax - zmin) / 2.0)
     info = get_part_info(pn)
     if info:
         return _dims_from_name(info["name"])
@@ -351,6 +556,23 @@ def part_aabb(
     For rotated parts the 8 OBB corners are transformed and their AABB is returned
     (conservative — may over-estimate for highly non-cubic parts at odd angles).
     """
+    measured = measured_bbox(part_number)
+    if measured:
+        # Measured boxes need not be centred on the origin; rotate about the origin.
+        r = rotation
+        corners = [
+            (
+                x + r[0] * sx + r[1] * sy + r[2] * sz,
+                y + r[3] * sx + r[4] * sy + r[5] * sz,
+                z + r[6] * sx + r[7] * sy + r[8] * sz,
+            )
+            for sx in measured[:2]
+            for sy in measured[2:4]
+            for sz in measured[4:]
+        ]
+        xs, ys, zs = zip(*corners)
+        return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
     hx, y_full, hz = get_part_dims(part_number)
     hy = y_full / 2.0
     # LDraw origin is at top face; body centre is hy below in +Y direction

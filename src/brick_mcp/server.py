@@ -98,6 +98,12 @@ Do not default to only basic bricks unless explicitly requested. Consider mixing
 - transparent parts for windows/lights
 - decorative elements (plants, fence pieces, signs)
 
+## Showing results to the user
+
+Images returned by tools reach only you, not the user. After save_model or
+render_model, tell the user the PNG path from the result (preview_path / path), and
+pass open_in_viewer=True to render_model when they ask to see the model.
+
 ## Practical recommendations from real usage
 
 - Keep proportions readable: base, wall, roof, and visible focal details.

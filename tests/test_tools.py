@@ -413,6 +413,7 @@ class TestAutoRender:
         from fastmcp.utilities.types import Image
 
         fake_image = Image(data=b"\x89PNG fake", format="png")
+        monkeypatch.setenv("BRICK_MCP_AUTO_RENDER", "1")
 
         with patch("brick_mcp._helpers.try_render", return_value=fake_image):
             new_model("t")

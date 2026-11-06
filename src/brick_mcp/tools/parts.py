@@ -3,32 +3,39 @@
 from __future__ import annotations
 
 from brick_mcp._helpers import err, ok
-from brick_mcp.catalog import get_part_dims, get_part_info, search_catalog
+from brick_mcp.catalog import (
+    get_part_dims,
+    get_part_info,
+    measured_bbox,
+    search_catalog,
+)
 from brick_mcp.colors import all_colors, get_color
 from brick_mcp.server import mcp
 
 
 @mcp.tool
-def search_parts(query: str, limit: int = 20) -> dict:
-    """Search the LDraw parts catalog by name or part number.
+def search_parts(query: str, limit: int = 20, include_subparts: bool = False) -> dict:
+    """Search the LDraw parts catalog by name or part number, best matches first.
 
     When the LDraw complete.zip is available (bundled with ldview) this
     searches ~20 000 parts.  Otherwise a built-in fallback table of ~100
     common parts is used.
 
-    "2x4" notation is automatically expanded to "2 x 4" to match LDraw names.
+    All words must match, in any order.  "2x4" matches "2 x 4", "colour" matches
+    "color", and LEGO names work too: "spike hub", "spike essential motor", "45609".
 
     Args:
-        query: Search string (case-insensitive substring). Examples:
-               "brick 2x4", "slope", "tile 1x2", "3001".
+        query: Search string (case-insensitive). Examples:
+               "brick 2x4", "slope", "tile 1x2", "3001", "spike color sensor".
         limit: Maximum number of results (default 20, max 200).
+        include_subparts: Also list subparts, aliases and obsolete parts.
 
     Returns:
         List of matching parts:
         [{"part_number": "3001.dat", "name": "Brick 2 x 4", "category": "Brick"}, ...]
     """
     limit = min(int(limit), 200)
-    results = search_catalog(query, limit)
+    results = search_catalog(query, limit, include_subparts)
     return ok(results, f"{len(results)} result(s) for '{query}'")
 
 
@@ -106,17 +113,26 @@ def get_part_footprint(part_number: str) -> dict:
         f" Side-by-side in Z: >= {int(z_half * 2)} LDU ({int(z_half)}+{int(z_half)})."
     )
 
+    data = {
+        "part_number": pn_dat.lower(),
+        "name": name,
+        "x_half": x_half,
+        "z_half": z_half,
+        "height": height,
+        "x_span": x_half * 2,
+        "z_span": z_half * 2,
+        "placement_note": note,
+    }
+    bbox = measured_bbox(pn_dat)
+    if bbox:
+        data["bbox"] = dict(zip(("xmin", "xmax", "ymin", "ymax", "zmin", "zmax"), bbox))
+        data["placement_note"] = (
+            f"{note} Measured from the part's geometry: its origin may be off-centre,"
+            " so use bbox (relative to the placed x, y, z) for exact clearances."
+        )
+
     return ok(
-        {
-            "part_number": pn_dat.lower(),
-            "name": name,
-            "x_half": x_half,
-            "z_half": z_half,
-            "height": height,
-            "x_span": x_half * 2,
-            "z_span": z_half * 2,
-            "placement_note": note,
-        },
+        data,
         f"{name}: x_span={int(x_half*2)} z_span={int(z_half*2)} height={int(height)} LDU",
     )
 

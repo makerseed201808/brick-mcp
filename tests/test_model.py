@@ -265,6 +265,28 @@ class TestSteps:
         p = get_model()
         assert p.remove_step(5, None) is False
 
+    def test_remove_step_uses_get_steps_numbering(self):
+        p = get_model()
+        p.add_part(None, "3001", 4, 0, 0, 0)
+        p.add_step(None)
+        p.add_part(None, "3004", 1, 20, 0, 0)
+        p.add_step(None)
+        p.add_part(None, "3003", 2, 40, 0, 0)
+        assert len(p.get_steps(None)) == 3
+        # Last step (index 2) merges into step 1
+        assert p.remove_step(2, None) is True
+        steps = p.get_steps(None)
+        assert [s["parts_in_step"] for s in steps] == [1, 2]
+        # Step 0 merges into step 1
+        assert p.remove_step(0, None) is True
+        assert [s["parts_in_step"] for s in p.get_steps(None)] == [3]
+
+    def test_remove_only_step_fails(self):
+        p = get_model()
+        p.add_part(None, "3001", 4, 0, 0, 0)
+        assert p.remove_step(0, None) is False
+        assert p.remove_step(1, None) is False
+
     def test_empty_model_has_one_empty_step(self):
         p = get_model()
         steps = p.get_steps(None)
